@@ -8,104 +8,127 @@ from tensorflow import keras
 from collections import defaultdict, deque
 
 class Riiid_Sequence(keras.utils.Sequence):
-    def __init__(self, groups, seq_len, user_map, start=0, end=None):
-        self.samples = groups
+    def __init__(self, groups, seq_len):
+        self.samples = {}
         self.seq_len = seq_len
-        self.user_map = user_map
-        self.start = start
-        self.end = end if end is not None else 0
-        
+        self.user_ids = []
+
+        for user_id in groups.index:
+            c_id, part, t_c_id, t_lag, q_et, ans_c, q_he, u_ans = groups[user_id]
+            if len(c_id) < 2:
+                continue
+
+            if len(c_id) > self.seq_len:
+                initial = len(c_id) % self.seq_len
+                if initial > 2:
+                    self.user_ids.append(f"{user_id}_0")
+                    self.samples[f"{user_id}_0"] = (
+                        c_id[:initial], part[:initial], t_c_id[:initial], t_lag[:initial], 
+                        q_et[:initial], ans_c[:initial], q_he[:initial], u_ans[:initial]
+                    )
+                chunks = len(c_id)//self.seq_len
+                for c in range(chunks):
+                    start = initial + c*self.seq_len
+                    end = initial + (c+1)*self.seq_len
+                    self.user_ids.append(f"{user_id}_{c+1}")
+                    self.samples[f"{user_id}_{c+1}"] = (
+                        c_id[start:end], part[start:end], t_c_id[start:end], t_lag[start:end], 
+                        q_et[start:end], ans_c[start:end], q_he[start:end], u_ans[start:end]
+                    )
+            else:
+                self.user_ids.append(f"{user_id}")
+                self.samples[f"{user_id}"] = (c_id, part, t_c_id, t_lag, q_et, ans_c, q_he, u_ans)
+
     def __len__(self):
-        return self.end - self.start
+        return len(self.user_ids)
     
-    def __getitem__(self, idx):
-        user_id = self.user_map[idx]
-        content_id, part, prior_elapsed_time, lag_time, answered_correctly = self.samples[user_id]
-        data_len = len(content_id)
-        
-        q_ids = np.zeros(self.seq_len, dtype=np.int32)
-        part_ids = np.zeros(self.seq_len, dtype=np.int8)
-        elapsed_ts = np.zeros(self.seq_len, dtype=np.float32)
-        lag_ts = np.zeros(self.seq_len, dtype=np.float32)
-        ans = np.zeros(self.seq_len, dtype=np.int8)
-        
-        if data_len > self.seq_len:
-            max_idx = random.choice([n for n in range(self.seq_len, data_len)])
-            min_idx = max_idx - self.seq_len
-            
-            q_ids[:] = content_id[min_idx:max_idx]
-            part_ids[:] = part[min_idx:max_idx]
-            elapsed_ts[:] = prior_elapsed_time[min_idx:max_idx]
-            lag_ts[:] = lag_time[min_idx:max_idx]
-            ans[:] = answered_correctly[min_idx:max_idx]
+    def __getitem__(self, index):
+        user_id = self.user_ids[index]
+        c_id, p, t_c_id, t_lag, q_et, ans_c, q_he, u_ans = self.samples[user_id]
+        seq_len = len(c_id)
+
+        content_ids = np.zeros(self.seq_len, dtype=int)
+        parts = np.zeros(self.seq_len, dtype=int)
+        task_container_ids = np.zeros(self.seq_len, dtype=int)
+        time_lag = np.zeros(self.seq_len, dtype=float)
+        ques_elapsed_time = np.zeros(self.seq_len, dtype=float)
+        answer_correct = np.zeros(self.seq_len, dtype=int)
+        ques_had_explian = np.zeros(self.seq_len, dtype=int)
+        user_answer = np.zeros(self.seq_len, dtype=int)
+
+        if seq_len == self.seq_len:
+            content_ids[:] = c_id
+            parts[:] = p
+            task_container_ids[:] = t_c_id
+            time_lag[:] = t_lag
+            ques_elapsed_time[:] = q_et
+            answer_correct[:] = ans_c
+            ques_had_explian[:] = q_he
+            user_answer[:] = u_ans
         else:
-            q_ids[-data_len:] = content_id
-            part_ids[-data_len:] = part
-            elapsed_ts[-data_len:] = prior_elapsed_time
-            lag_ts[-data_len:] = lag_time
-            ans[-data_len:] = answered_correctly        
-        
-        target_ids = q_ids[1:]
-        label = ans[1:]
-        
-        input_ids = q_ids[1:]
-        input_parts = part_ids[1:]
+            content_ids[-seq_len:] = c_id
+            parts[-seq_len:] = p
+            task_container_ids[-seq_len:] = t_c_id
+            time_lag[-seq_len:] = t_lag
+            ques_elapsed_time[-seq_len:] = q_et
+            answer_correct[-seq_len:] = ans_c
+            ques_had_explian[-seq_len:] = q_he
+            user_answer[-seq_len:] = u_ans
 
-        input_rtime = elapsed_ts[:-1]
-        input_ans = ans[:-1]
-        input_lag = lag_ts[:-1]
-        
-        inputs = np.concatenate((input_ids[np.newaxis,:], input_parts[np.newaxis,:], input_rtime[np.newaxis,:], 
-                                input_lag[np.newaxis,:], input_ans[np.newaxis,:]), axis=0) # features, seq_len
-        return inputs, target_ids, label
+        return content_ids, parts, task_container_ids, time_lag, ques_elapsed_time, answer_correct, ques_had_explian, user_answer
 
-def training_data(df_pickle_path, n_questions, n_parts, n_lag):
-    print("Start Preparing Training Data")
-    train_df = pd.read_pickle(df_pickle_path)
-    groups = train_df.groupby("user_id").apply(lambda df:(df["content_id"].values, df["part"].values, 
-                                                          df["prior_question_elapsed_time"].values, df["lag_time"].values, 
-                                                          df["answered_correctly"].values))
+def data_generator(groups, seq_len, batch_size=256, shuffle=True):
+    riiid_seq = Riiid_Sequence(groups, seq_len)
+    data_size = len(riiid_seq.user_ids)
+    while True:
+        indexs = np.arange(data_size)
+        if shuffle:
+            np.random.shuffle(indexs)
 
-    # 產生 group idx 對應 user_id 的字典
-    user_map = {i: user_id for i, user_id in enumerate(groups.index)}
+        for i in range(data_size//batch_size):
+            b_content_ids = []
+            b_parts = []
+            b_task_container_ids = []
+            b_time_lag = []
+            b_ques_elapsed_time = []
+            b_answer_correct = []
+            b_ques_had_explian = []
+            b_user_answer = []
 
-    # 加入 start token
-    for group in groups:
-        group[0][0], group[1][0], group[2][0], group[3][0], group[4][0] = n_questions, n_parts, -99, n_lag, 3
-    print("Complete Preparing Training Data")
-    return groups, user_map
+            for idx in indexs[i*batch_size:(i+1)*batch_size]:
+                c_ids, parts, t_c_ids, t_lag, ques_et, ans_c, ques_he, u_ans = riiid_seq[idx]
+                b_content_ids.append(c_ids)
+                b_parts.append(parts)
+                b_task_container_ids.append(t_c_ids)
+                b_time_lag.append(t_lag)
+                b_ques_elapsed_time.append(ques_et)
+                b_answer_correct.append(ans_c)
+                b_ques_had_explian.append(ques_he)
+                b_user_answer.append(u_ans)
 
-def data_generator(groups, user_map, n_features, seq_len, batch_size=64, partial=0.8, val_ratio=0.04):
-    seq_len = seq_len-1
-    # get length of each user and compute probability accordingly
-    array_len = []
-    for group in groups:
-        array_len.append(len(group[0]))
-    array_len = np.clip(np.array(array_len), a_min=1, a_max=500)
-    prob = array_len/sum(array_len)
+            out_dict = {
+                "e_content_id": tf.convert_to_tensor(b_content_ids)[:, :-1],
+                "d_content_id": tf.convert_to_tensor(b_content_ids)[:, 1:],
+                "e_part": tf.convert_to_tensor(b_parts)[:, :-1],
+                "d_part": tf.convert_to_tensor(b_parts)[:, 1:],
+                "e_task_container_id": tf.convert_to_tensor(b_task_container_ids)[:, :-1],
+                "d_task_container_id": tf.convert_to_tensor(b_task_container_ids)[:, 1:],
+                "e_time_lag": tf.convert_to_tensor(b_time_lag)[:, :-1],
+                "d_time_lag": tf.convert_to_tensor(b_time_lag)[:, 1:],
+                "elapsed_time": tf.convert_to_tensor(b_ques_elapsed_time)[:, :-1],
+                "answer_correct": tf.convert_to_tensor(b_answer_correct)[:, :-1],
+                "explaination": tf.convert_to_tensor(b_ques_had_explian)[:, :-1],
+                "answer": tf.convert_to_tensor(b_user_answer)[:, :-1]
+            }
+            labels = tf.convert_to_tensor([answer_correct[1:]-1 for answer_correct in b_answer_correct])
+            yield out_dict, labels
+
+if __name__=="__main__" :
+    with open("val_group.pkl.zip", 'rb') as pick:
+        val_group = pickle.load(pick)
     
-    # random choose N=# of user with replacement
-    ids = [k for k in user_map.keys()]
-    takes_ids =  random.choices(ids, weights=prob, k=int(len(user_map)*partial))
-    
-    # start generate data
-    steps = len(takes_ids)//batch_size
-    riiid_seq = Riiid_Sequence(groups, seq_len, user_map)
-    for s in range(steps):
-        batch_inputs = np.zeros((n_features, batch_size, seq_len-1))
-        batch_target_id = np.zeros((batch_size, seq_len-1))
-        batch_label = np.zeros((batch_size, seq_len-1))
-        for j, idx in enumerate(takes_ids[s*batch_size:(s+1)*batch_size]):
-            inputs, target_id, label = riiid_seq[idx]
-            batch_inputs[:, j, :] = inputs
-            batch_target_id[j, :] = target_id
-            batch_label[j,:] = label
-        
-        # divide data into train and val
-        n_val = int(seq_len*val_ratio)
-        batch_train, batch_val = batch_inputs[:,:,:seq_len-n_val], batch_inputs[:,:,-n_val:]
-        train_target_id, val_target_id = batch_target_id[:,:seq_len-n_val], batch_target_id[:,-n_val:]
-        train_label, val_label = batch_label[:, :seq_len-n_val], batch_label[:,-n_val:]
-        yield tf.convert_to_tensor(batch_train), tf.convert_to_tensor(batch_val),\
-              tf.convert_to_tensor(train_target_id), tf.convert_to_tensor(val_target_id),\
-              tf.convert_to_tensor(train_label, dtype=tf.float32), tf.convert_to_tensor(val_label, dtype=tf.float32)
+    data_gen = data_generator(val_group, seq_len=100, batch_size=64, shuffle=True)
+    for step, (val_train, val_label) in enumerate(data_gen):
+        print(val_label)
+        if step == 3:
+            break
