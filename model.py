@@ -260,11 +260,11 @@ class SaintPlus(keras.Model):
         self.final_layer = keras.layers.Dense(1, activation='sigmoid')
     
     def call(self, x, training):
-        mask_1 = seq_mask(x["d_content_id"], current_excluded=False)
+        mask_1 = seq_mask(x["e_content_id"], current_excluded=True)
         mask_2 = seq_mask(x["d_content_id"], current_excluded=True)
 
         enc_out = self.encoder(x, mask_1, training)
-        dec_out = self.decoder(x, enc_out, mask_1, mask_2, training)
+        dec_out = self.decoder(x, enc_out, mask_2, mask_1, training)
         final_out = self.final_layer(dec_out)
 
         return final_out
@@ -320,5 +320,3 @@ if __name__=='__main__':
     loss = loss_fn(labels, preds)
     print(labels)
     print(preds)
-
-    

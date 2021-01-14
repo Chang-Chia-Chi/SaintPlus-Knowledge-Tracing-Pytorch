@@ -83,6 +83,7 @@ def data_generator(groups, seq_len, batch_size=256, shuffle=True):
     while True:
         indexs = np.arange(data_size)
         if shuffle:
+            print("Data shuffled !!")
             np.random.shuffle(indexs)
 
         for i in range(data_size//batch_size):

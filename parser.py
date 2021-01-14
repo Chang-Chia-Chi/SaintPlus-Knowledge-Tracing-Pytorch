@@ -2,7 +2,7 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--num_layers', type=int, default=2,
-                    help='number of multihead attention layer(default: 4)')
+                    help='number of multihead attention layer(default: 2)')
 parser.add_argument('--num_heads', type=int, default=8,
                     help='number of head in one multihead attention layer(default: 8)')
 parser.add_argument('--d_model', type=int, default=256,
