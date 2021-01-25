@@ -18,7 +18,6 @@ when user might start his/her first event. Finally, random select a time within 
 a virtual start time and add to timestamp feature for each user. 
 Sort it by virtual timestamp we could then eazily split train/validation by time.
 
-Only take 30M rows for training/validation
 This program will produce three group files: 
 1. training 
 2. validation
