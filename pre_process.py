@@ -43,20 +43,17 @@ def pre_process(train_path, ques_path, row_start=30e6, num_rows=30e6, split_rati
     t_s = time.time()
 
     Features = ["timestamp", "user_id", "content_id", "content_type_id", "task_container_id", "user_answer", 
-                "answered_correctly", "prior_question_elapsed_time", "prior_question_had_explanation"]
+                "answered_correctly", "prior_question_elapsed_time", "prior_question_had_explanation", "viretual_time_stamp"]
     train_df = pd.read_pickle(train_path)[Features]
     train_df.index = train_df.index.astype('uint32')
 
     # shift prior elapsed_time and had_explanation to make current elapsed_time and had_explanation
     train_df = train_df[train_df.content_type_id == 0].reset_index()
-    train_df["question_elapsed_time"] = train_df.groupby("user_id")["prior_question_elapsed_time"].shift(-1)
-    train_df["question_elapsed_time"] = train_df.groupby(["user_id", "timestamp"])["question_elapsed_time"].transform('last')
-    train_df["question_elapsed_time"].fillna(0, inplace=True)
-    train_df["question_elapsed_time"] /= 1000 # convert to sec
-    train_df["question_had_explanation"] = train_df.groupby("user_id")["prior_question_had_explanation"].shift(-1)
-    train_df["question_had_explanation"] = train_df.groupby(["user_id", "timestamp"])["question_had_explanation"].transform('last')
-    train_df["question_had_explanation"].fillna(False, inplace=True)
-    train_df["question_had_explanation"] = train_df["question_had_explanation"].astype('int8')
+    train_df["prior_question_elapsed_time"].fillna(0, inplace=True)
+    train_df["prior_question_elapsed_time"] /= 1000 # convert to sec
+    train_df["prior_question_elapsed_time"] = train_df["prior_question_elapsed_time"].clip(0, 300)
+    train_df["prior_question_had_explanation"].fillna(False, inplace=True)
+    train_df["prior_question_had_explanation"] = train_df["prior_question_had_explanation"].astype('int8')
     
     # get time_lag feature
     print("Start compute time_lag")
@@ -65,6 +62,10 @@ def pre_process(train_path, ques_path, row_start=30e6, num_rows=30e6, split_rati
         pickle.dump(time_dict, pick)
     print("Complete compute time_lag")
     print("====================")
+
+    train_df = train_df.sort_values(by=["viretual_time_stamp"])
+    train_df.drop("timestamp", axis=1, inplace=True)
+    train_df.drop("viretual_time_stamp", axis=1, inplace=True)
 
     print("Start merge dataframe")
     # merge with question dataframe to get part feature
@@ -80,29 +81,14 @@ def pre_process(train_path, ques_path, row_start=30e6, num_rows=30e6, split_rati
     train_df["content_id"] += 1
     train_df["task_container_id"] += 1
     train_df["answered_correctly"] += 1
-    train_df["question_had_explanation"] += 1
+    train_df["prior_question_had_explanation"] += 1
     train_df["user_answer"] += 1
 
-    Train_features = ["user_id", "content_id", "part", "task_container_id", "time_lag", "question_elapsed_time",
-                      "answered_correctly", "question_had_explanation", "user_answer"]
-    # Inference group
-    print("Start inference grouping")
-    infer_group = train_df[Train_features].groupby("user_id").apply(lambda df: (
-        df["content_id"].values[-seq_len:],
-        df["part"].values[-seq_len:],
-        df["task_container_id"].values[-seq_len:],
-        df["time_lag"].values[-seq_len:],
-        df["question_elapsed_time"].values[-seq_len:],
-        df["answered_correctly"].values[-seq_len:],
-        df["question_had_explanation"].values[-seq_len:],
-        df["user_answer"].values[-seq_len:]
-    ))
-    with open("infer_group.pkl.zip", 'wb') as pick:
-        pickle.dump(infer_group, pick)
-    del infer_group
-    print("Complete inference grouping")
-    print("====================")
+    Train_features = ["user_id", "content_id", "part", "task_container_id", "time_lag", "prior_question_elapsed_time",
+                      "answered_correctly", "prior_question_had_explanation", "user_answer", "timestamp"]
 
+    if num_rows == -1:
+        num_rows = train_df.shape[0]
     train_df = train_df.iloc[int(row_start):int(row_start+num_rows)]
     val_df = train_df[int(num_rows*split_ratio):]
     train_df = train_df[:int(num_rows*split_ratio)]
@@ -128,10 +114,10 @@ def pre_process(train_path, ques_path, row_start=30e6, num_rows=30e6, split_rati
         df["part"].values,
         df["task_container_id"].values,
         df["time_lag"].values,
-        df["question_elapsed_time"].values,
+        df["prior_question_elapsed_time"].values,
         df["answered_correctly"].values,
-        df["question_had_explanation"].values,
-        df["user_answer"].values
+        df["prior_question_had_explanation"].values,
+        df["user_answer"].values,
     ))
     with open("train_group.pkl.zip", 'wb') as pick:
         pickle.dump(train_group, pick)
@@ -142,16 +128,19 @@ def pre_process(train_path, ques_path, row_start=30e6, num_rows=30e6, split_rati
         df["part"].values,
         df["task_container_id"].values,
         df["time_lag"].values,
-        df["question_elapsed_time"].values,
+        df["prior_question_elapsed_time"].values,
         df["answered_correctly"].values,
-        df["question_had_explanation"].values,
-        df["user_answer"].values
+        df["prior_question_had_explanation"].values,
+        df["user_answer"].values,
     ))
     with open("val_group.pkl.zip", 'wb') as pick:
         pickle.dump(val_group, pick)
     print("Complete pre-process, execution time {:.2f} s".format(time.time()-t_s))
 
 if __name__=="__main__":
-    train_path = "cv5_train.pickle.zip"
-    ques_path = "questions.csv"
-    pre_process(train_path, ques_path)
+    train_path = ""
+    ques_path = ""
+    # be aware that appropriate range of data is required to ensure all questions 
+    # are in the training set, or LB score will be much lower than CV score
+    # Recommend to user all of the data.
+    pre_process(train_path, ques_path, 0, -1, 0.95)

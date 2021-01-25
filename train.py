@@ -1,16 +1,18 @@
 import time
 import pickle
+import torch
+import torch.nn as nn
 import numpy as np
-import tensorflow as tf
-from tensorflow import keras
-from model import SaintPlus, CustomSchedule
-from tqdm import tqdm 
+import torch.optim as optim
 from parser import parser
-from utils import plot_result, compute_loss
-from data_generator import data_generator, Riiid_Sequence
+from model import SaintPlus, NoamOpt
+from torch.utils.data import DataLoader
+from data_generator import Riiid_Sequence
 from sklearn.metrics import roc_auc_score
 
 if __name__=="__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
 
     args = parser.parse_args()
     num_layers = args.num_layers
@@ -35,95 +37,91 @@ if __name__=="__main__":
     with open("val_group.pkl.zip", 'rb') as pick:
         val_group = pickle.load(pick)
 
-    train_riiid = Riiid_Sequence(train_group, seq_len)
-    train_steps = len(train_riiid)//batch_size
-    print("Training steps {}".format(train_steps))
-    del train_riiid
-    train_gen = data_generator(train_group, seq_len=100, batch_size=batch_size, shuffle=True)
+    train_seq = Riiid_Sequence(train_group, seq_len)
+    train_size = len(train_seq)
+    train_loader = DataLoader(train_seq, batch_size=batch_size, shuffle=True, num_workers=8)
+    del train_seq, train_group
 
-    val_riiid = Riiid_Sequence(val_group, seq_len)
-    val_steps = len(val_riiid)//batch_size
-    print("Validation steps {}".format(val_steps))
-    del val_riiid
-    val_gen = data_generator(val_group, seq_len=100, batch_size=batch_size, shuffle=False)
+    val_seq = Riiid_Sequence(val_group, seq_len)
+    val_size = len(val_seq)
+    val_loader = DataLoader(val_seq, batch_size=batch_size, shuffle=False, num_workers=8)
+    del val_seq, val_group
 
-    learning_rate = CustomSchedule(d_model)
-    optimizer = tf.keras.optimizers.Adam(learning_rate, beta_1=0.9, beta_2=0.999, 
-                                         epsilon=1e-8)
-    loss_fn = keras.losses.BinaryCrossentropy(reduction='none')
-    saint = SaintPlus(num_layers=num_layers, d_ffn=d_ffn, d_model=d_model, num_heads=num_heads,
+    loss_fn = nn.BCELoss()
+    model = SaintPlus(seq_len=100, num_layers=num_layers, d_ffn=d_ffn, d_model=d_model, num_heads=num_heads,
                     max_len=max_len, n_questions=n_questions, n_parts=n_parts, n_tasks=n_tasks, 
                     n_ans=n_ans, dropout=dropout)
+    optimizer = NoamOpt(d_model, 1, 4000 ,optim.Adam(model.parameters(), lr=0))
+    model.to(device)
+    loss_fn.to(device)
 
-    best_auc = 0
-    wait = 0
     train_losses = []
-    train_aucs = []
     val_losses = []
     val_aucs = []
+    best_auc = 0
     for e in range(epochs):
         print("==========Epoch {} Start Training==========".format(e+1))
+        model.train()
         t_s = time.time()
         train_loss = []
-        train_labels = []
-        train_preds = []
-        pbar = tqdm(train_steps)
-        for step, (batch_train, batch_label) in enumerate(train_gen):
-            with tf.GradientTape() as tape:
-                preds = saint(batch_train, training=True)
-                preds = tf.squeeze(preds, axis=-1)
-                loss = compute_loss(loss_fn, batch_label, preds)
-            
-            grads = tape.gradient(loss, saint.trainable_variables)
-            optimizer.apply_gradients(zip(grads, saint.trainable_variables))
+        for step, data in enumerate(train_loader):
+            content_ids = data[0].to(device).long()
+            parts = data[1].to(device).long()
+            time_lag = data[2].to(device).float()
+            ques_elapsed_time = data[3].to(device).float()
+            answer_correct = data[4].to(device).long()
+            ques_had_explian = data[5].to(device).long()
+            user_answer = data[6].to(device).long()
+            label = data[7].to(device).float()
 
-            mask = batch_label != -1
-            train_loss.append(loss.numpy())
-            train_labels.extend(batch_label[mask].numpy())
-            train_preds.extend(preds[mask].numpy())
-            pbar.update(1)
-            if step == train_steps - 1:
-                break
-        
+            optimizer.optimizer.zero_grad()
+
+            preds = model(content_ids, parts, time_lag, ques_elapsed_time, answer_correct, ques_had_explian, user_answer)
+            loss_mask = (answer_correct != 0)
+            preds_masked = torch.masked_select(preds, loss_mask)
+            label_masked = torch.masked_select(label, loss_mask)
+            loss = loss_fn(preds_masked, label_masked)
+
+            loss.backward()
+            optimizer.step()
+
+            train_loss.append(loss.item())
+                
         train_loss = np.mean(train_loss)
-        train_auc = roc_auc_score(train_labels, train_preds)
-
         print("==========Epoch {} Start Validation==========".format(e+1))
+        model.eval()
         val_loss = []
         val_labels = []
         val_preds = []
-        pbar = tqdm(val_steps)
-        for step, (batch_val, batch_label) in enumerate(val_gen):
-            preds = saint(batch_val, training=False)
-            preds = tf.squeeze(preds, axis=-1)
-            loss = compute_loss(loss_fn, batch_label, preds)
+        for step, data in enumerate(val_loader):
+            content_ids = data[0].to(device).long()
+            parts = data[1].to(device).long()
+            time_lag = data[2].to(device).float()
+            ques_elapsed_time = data[3].to(device).float()
+            answer_correct = data[4].to(device).long()
+            ques_had_explian = data[5].to(device).long()
+            user_answer = data[6].to(device).long()
+            label = data[7].to(device).float()
 
-            mask = batch_label != -1
-            val_loss.append(loss.numpy())
-            val_labels.extend(batch_label[mask].numpy())
-            val_preds.extend(preds[mask].numpy())
-            pbar.update(1)
-            if step == val_steps - 1:
-                break
-        
+            preds = model(content_ids, parts, time_lag, ques_elapsed_time, answer_correct, ques_had_explian, user_answer)
+            loss_mask = (answer_correct != 0)
+            preds_masked = torch.masked_select(preds, loss_mask)
+            label_masked = torch.masked_select(label, loss_mask)
+
+            val_loss.append(loss.item())
+            val_labels.extend(label_masked.view(-1).data.cpu().numpy())
+            val_preds.extend(preds_masked.view(-1).data.cpu().numpy())
+
         val_loss = np.mean(val_loss)
         val_auc = roc_auc_score(val_labels, val_preds)
-
+        
+        if val_auc > best_auc:
+            print("Save model at epoch {}".format(e+1))
+            torch.save(model.state_dict(), "./saint.pt")
+            best_auc = val_auc
+            
         train_losses.append(train_loss)
-        train_aucs.append(train_auc)
         val_losses.append(val_loss)
         val_aucs.append(val_auc)
         exec_t = int((time.time() - t_s)/60)
-        print("Train Loss {:.4f}, Train AUC {:.4f} / Val Loss {:.4f}, Val AUC {:.4f} / Exec time {} min".format(train_loss, train_auc, val_loss, val_auc, exec_t))
-
-        if val_auc > best_auc:
-            best_auc = val_auc
-            wait = 0
-            saint.save_weights("saintpp")
-        else:
-            wait += 1
-            if wait >= patience:
-                print("Early Stopping at Epoch {}".format(e+1))
-                break
-
-    plot_result(train_losses, train_aucs, val_losses, val_aucs)
+        print("Train Loss {:.4f}/ Val Loss {:.4f}, Val AUC {:.4f} / Exec time {} min".format(train_loss, val_loss, val_auc, exec_t))
