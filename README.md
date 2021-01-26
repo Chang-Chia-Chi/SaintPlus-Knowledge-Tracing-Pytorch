@@ -29,6 +29,7 @@ Besides, Causal Mask as shown below is applied to all of encoder & decoder layer
 |Max Sequence Length |100
 |Batch Size |512
 |Warm Steps |4000
+
 |Split Ratio|0.95
 ## CV Strategy 
 Data is derived from kaggler: tito's strategy [notebook](https://www.kaggle.com/its7171/cv-strategy).
