@@ -29,8 +29,8 @@ Besides, Causal Mask as shown below is applied to all of encoder & decoder layer
 |Max Sequence Length |100
 |Batch Size |512
 |Warm Steps |4000
-
 |Split Ratio|0.95
+
 ## CV Strategy 
 Data is derived from kaggler: tito's strategy [notebook](https://www.kaggle.com/its7171/cv-strategy).
 Because this is a time series competition, training and validation dataset should be split by time. If we only use last several rows for each user as validation, we'll probably focusing too much on heavy user. But timestamp feature in original data only specified time the question be finished since the user's first event. We have no idea what's actual time in real world!    
