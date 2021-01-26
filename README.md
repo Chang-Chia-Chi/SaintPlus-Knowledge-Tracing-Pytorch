@@ -44,7 +44,7 @@ a virtual start time and add to timestamp feature for each user. Sort it by virt
 4. Adjust hyperparameter in `parser.py`
 5. Run `python train.py`
 ## Training Result
-CV 0.799/Private 0.799    
+CV 0.799/Private 0.799 AUC    
 [kaggle training notebook](https://www.kaggle.com/maxchang0724/saint-training-cv-0-799-private-0-799)   
 [kaggle inference notebook](https://www.kaggle.com/maxchang0724/saint-inference-private-0-799)
 ## Reference
